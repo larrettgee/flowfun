@@ -169,6 +169,7 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
   const [showCashOutModal, setShowCashOutModal] = useState(false);
   const [cashedOutAmount, setCashedOutAmount] = useState("0");
   const [selectedTile, setSelectedTile] = useState<string | null>(null);
+  const [realGameSelections, setRealGameSelections] = useState<Set<string>>(new Set());
 
   const REQUIRED_CHAIN_ID = 747;
   const isWalletConnected = account.status === "connected";
@@ -215,7 +216,11 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     data: makeChoiceHash,
     isPending: isMakingChoice,
   } = useWriteContract();
-  const { writeContract: cashOut, data: cashOutHash } = useWriteContract();
+  const { 
+    writeContract: cashOut, 
+    data: cashOutHash,
+    isPending: isCashingOut,
+  } = useWriteContract();
 
   // Transaction receipts with auto-refresh
   const { isLoading: isEnterGameLoading, isSuccess: enterGameSuccess } =
@@ -230,7 +235,7 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
   } = useWaitForTransactionReceipt({
     hash: makeChoiceHash,
   });
-  const { isSuccess: cashOutSuccess } = useWaitForTransactionReceipt({
+  const { isLoading: isCashOutLoading, isSuccess: cashOutSuccess } = useWaitForTransactionReceipt({
     hash: cashOutHash,
   });
 
@@ -310,19 +315,38 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
       { multiplier: 10, tiles: 3 }, // choice 6
     ];
 
-    // Show next 3 multipliers starting from current position
-    const startIndex = Math.max(0, roundsCompleted);
-    const endIndex = Math.min(contractMultipliers.length, startIndex + 3);
+    // Show completed rounds + current + next 2
+    const allRows = [];
+    
+    // Add all completed rounds (greyed out)
+    for (let i = 0; i < roundsCompleted; i++) {
+      const choice = contractMultipliers[i];
+      if (choice) {
+        allRows.push({
+          multiplier: choice.multiplier,
+          tiles: choice.tiles,
+          id: `row${i}`,
+          level: i + 1,
+          completed: true,
+        });
+      }
+    }
+    
+    // Add current + next 2 rounds
+    for (let i = roundsCompleted; i < Math.min(contractMultipliers.length, roundsCompleted + 3); i++) {
+      const choice = contractMultipliers[i];
+      if (choice) {
+        allRows.push({
+          multiplier: choice.multiplier,
+          tiles: choice.tiles,
+          id: `row${i}`,
+          level: i + 1,
+          completed: false,
+        });
+      }
+    }
 
-    return contractMultipliers
-      .slice(startIndex, endIndex)
-      .map((choice, index) => ({
-        multiplier: choice.multiplier,
-        tiles: choice.tiles,
-        id: `row${startIndex + index}`,
-        level: startIndex + index + 1,
-      }))
-      .reverse(); // Reverse so highest is on top
+    return allRows.reverse(); // Reverse so highest is on top
   };
 
   const rows = getGameRows();
@@ -335,6 +359,10 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     setLevel(1);
     setCurrentRowIndex(2); // Start with the bottom row (1.10x)
     setSelectedTile(null);
+    
+    // Clear real game selections for fresh start
+    setRealGameSelections(new Set());
+    localStorage.removeItem('flowfun-selections');
 
     // Generate new cat positions for current rows
     const newCatPositions = new Set<string>();
@@ -348,7 +376,52 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
 
   useEffect(() => {
     initializeGame();
+    // Load real game selections from localStorage
+    const saved = localStorage.getItem('flowfun-selections');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setRealGameSelections(new Set(parsed));
+      } catch (error) {
+        console.error('Error loading selections:', error);
+      }
+    }
   }, []);
+
+  // Generate fake selections for completed rounds we don't have data for
+  const generateCompletedSelections = () => {
+    const roundsCompleted = Number(contractGamesPlayed);
+    const newSelections = new Set(realGameSelections);
+    
+    for (let i = 0; i < roundsCompleted; i++) {
+      const rowId = `row${i}`;
+      const hasSelection = Array.from(realGameSelections).some(sel => sel.startsWith(rowId));
+      
+      if (!hasSelection) {
+        // Generate a random selection for this completed round
+        const contractMultipliers = [
+          { tiles: 7 }, { tiles: 7 }, { tiles: 7 }, 
+          { tiles: 6 }, { tiles: 5 }, { tiles: 4 }, { tiles: 3 }
+        ];
+        const choice = contractMultipliers[i];
+        if (choice) {
+          const randomTile = Math.floor(Math.random() * choice.tiles);
+          newSelections.add(`${rowId}-${randomTile}`);
+        }
+      }
+    }
+    
+    if (newSelections.size !== realGameSelections.size) {
+      setRealGameSelections(newSelections);
+      localStorage.setItem('flowfun-selections', JSON.stringify(Array.from(newSelections)));
+    }
+  };
+
+  useEffect(() => {
+    if (hasActiveGame && !isDemoMode) {
+      generateCompletedSelections();
+    }
+  }, [contractGamesPlayed, hasActiveGame, isDemoMode]);
 
   // Refetch data after successful transactions
   useEffect(() => {
@@ -393,6 +466,9 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
           if (!won) {
             // Player lost - game ended
             setGameState("lost");
+            // Clear selections since game is over
+            setRealGameSelections(new Set());
+            localStorage.removeItem('flowfun-selections');
           }
         }
       } catch (error) {
@@ -411,11 +487,33 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     }
   }, [makeChoiceError]);
 
+  // Clear selected tile if transaction hash is cleared (user rejection)
+  useEffect(() => {
+    if (!makeChoiceHash && selectedTile && !isMakingChoice) {
+      setSelectedTile(null);
+    }
+  }, [makeChoiceHash, selectedTile, isMakingChoice]);
+
+  // Failsafe: Clear selected tile after timeout if still stuck
+  useEffect(() => {
+    if (selectedTile && !isMakingChoice && !isMakeChoiceLoading) {
+      const timeout = setTimeout(() => {
+        console.log("Clearing stuck tile selection");
+        setSelectedTile(null);
+      }, 5000); // 5 second timeout
+
+      return () => clearTimeout(timeout);
+    }
+  }, [selectedTile, isMakingChoice, isMakeChoiceLoading]);
+
   useEffect(() => {
     if (cashOutSuccess) {
       refetchGameInfo();
       refetchBalance();
       setShowCashOutModal(true);
+      // Clear selections since game is over
+      setRealGameSelections(new Set());
+      localStorage.removeItem('flowfun-selections');
     }
   }, [cashOutSuccess, refetchGameInfo, refetchBalance]);
 
@@ -425,6 +523,9 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     multiplier: number
   ) => {
     if (!canPlay || gameState !== "playing") return;
+    
+    // Prevent multiple clicks when transaction is pending
+    if (isMakingChoice || isMakeChoiceLoading || selectedTile) return;
 
     const tileId = `${rowId}-${tileIndex}`;
 
@@ -508,6 +609,12 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
         functionName: "makeChoice",
         args: [choiceIndex],
       });
+      
+      // Save the selection to localStorage only after successful call
+      const newSelections = new Set(realGameSelections);
+      newSelections.add(tileId);
+      setRealGameSelections(newSelections);
+      localStorage.setItem('flowfun-selections', JSON.stringify(Array.from(newSelections)));
     } catch (error) {
       console.error("Failed to make choice:", error);
       setSelectedTile(null);
@@ -542,6 +649,14 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
       return "⏳";
     }
 
+    // For real game completed rounds, show selections
+    if (!isDemoMode && hasActiveGame) {
+      if (realGameSelections.has(tileId)) {
+        return "✓";
+      }
+    }
+
+    // For demo mode
     if (!revealedTiles.has(tileId)) return null;
 
     if (catPositions.has(tileId)) {
@@ -559,6 +674,11 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     const isSelected = selectedTile === tileId;
     const isLoading = isSelected && (isMakingChoice || isMakeChoiceLoading);
 
+    // For real game, check if this is a completed row
+    const row = rows.find(r => r.id === rowId);
+    const isCompletedRow = !isDemoMode && hasActiveGame && (row as any)?.completed;
+    const isRealGameSelection = !isDemoMode && hasActiveGame && realGameSelections.has(tileId);
+
     // Check if any tile in this row has been revealed
     const rowHasRevealedTile = Array.from(revealedTiles).some((tile) =>
       tile.startsWith(rowId)
@@ -567,6 +687,8 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     let className = "game-tile";
     if (isLoading) {
       className += " tile-loading";
+    } else if (isCompletedRow) {
+      className += isRealGameSelection ? " tile-completed-safe" : " tile-completed";
     } else if (isRevealed) {
       className += hasCat ? " tile-death" : " tile-safe";
     } else if (!isUnlocked) {
@@ -591,10 +713,12 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
           <div className="game-board">
             {rows.map((row, index) => {
               // For real games, determine unlock status based on rounds completed
+              const currentRow = rows[index];
+              const isCompletedRow = !isDemoMode && hasActiveGame && (currentRow as any)?.completed;
               const isUnlocked = isDemoMode
                 ? index >= currentRowIndex
                 : hasActiveGame
-                ? Number(contractGamesPlayed) >= rows.length - 1 - index // Bottom row first
+                ? !isCompletedRow && Number(contractGamesPlayed) >= rows.length - 1 - index // Bottom row first
                 : index === rows.length - 1; // Only bottom row unlocked for non-active games
 
               const distanceFromCurrent = isDemoMode
@@ -620,6 +744,8 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
                   key={row.id}
                   className={`game-row ${
                     completedRows.has(row.id) ? "row-completed" : ""
+                  } ${
+                    isCompletedRow ? "row-completed-real" : ""
                   } ${isUnlocked ? "row-unlocked" : "row-locked"}`}
                   style={{
                     opacity,
@@ -642,6 +768,9 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
                           !canPlay ||
                           gameState !== "playing" ||
                           !isUnlocked ||
+                          isMakingChoice ||
+                          isMakeChoiceLoading ||
+                          selectedTile !== null ||
                           (isDemoMode &&
                             Array.from(revealedTiles).some((tile) =>
                               tile.startsWith(row.id)
@@ -802,13 +931,12 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
                 <button
                   className="btn btn-cash-out btn-large"
                   onClick={handleCashOut}
+                  disabled={isCashingOut || isCashOutLoading}
                 >
-                  💰 Cash Out
+                  {isCashingOut || isCashOutLoading ? "⏳ Cashing Out..." : "💰 Cash Out"}
                 </button>
                 <p className="cash-out-hint">
-                  {isDemoMode
-                    ? "Playing in demo mode!"
-                    : "Secure your winnings or keep climbing!"}
+                  {isDemoMode ? "Playing in demo mode!" : ""}
                 </p>
               </div>
             )}
