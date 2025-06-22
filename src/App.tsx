@@ -14,16 +14,7 @@ import { ABI } from "./ABI";
 
 const CONTRACT_ADDRESS = "0xc97a8e7Fe83d3941a10D5f791F5cf3E6Ef88f57c" as const; // TODO: Set contract address
 
-// Map row multipliers to contract choice indices
-const getChoiceIndex = (multiplier: number): number => {
-  if (multiplier <= 1.15) return 0; // 1.1x
-  if (multiplier <= 1.3) return 1; // 1.25x
-  if (multiplier <= 1.75) return 2; // 1.5x
-  if (multiplier <= 2.5) return 3; // 2x
-  if (multiplier <= 4) return 4; // 3x
-  if (multiplier <= 7.5) return 5; // 5x
-  return 6; // 10x
-};
+
 
 // Modal Component
 function WalletModal({
@@ -164,7 +155,7 @@ function Navbar({ onConnectClick }: { onConnectClick: () => void }) {
 // Game Component
 function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
   const account = useAccount();
-  const { switchChain, error: switchError } = useSwitchChain();
+  const { switchChain } = useSwitchChain();
   const [gameState, setGameState] = useState<"playing" | "lost" | "cashed-out">(
     "playing"
   );
@@ -180,7 +171,6 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
   const [showCashOutModal, setShowCashOutModal] = useState(false);
   const [cashedOutAmount, setCashedOutAmount] = useState("0");
   const [selectedTile, setSelectedTile] = useState<string | null>(null);
-  const [gameEnded, setGameEnded] = useState(false);
 
   const REQUIRED_CHAIN_ID = 747;
   const isWalletConnected = account.status === "connected";
@@ -230,7 +220,6 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
   const {
     writeContract: cashOut,
     data: cashOutHash,
-    isPending: isCashingOut,
   } = useWriteContract();
 
   // Transaction receipts with auto-refresh
@@ -246,10 +235,9 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
   } = useWaitForTransactionReceipt({
     hash: makeChoiceHash,
   });
-  const { isLoading: isCashOutLoading, isSuccess: cashOutSuccess } =
-    useWaitForTransactionReceipt({
-      hash: cashOutHash,
-    });
+  const { isSuccess: cashOutSuccess } = useWaitForTransactionReceipt({
+    hash: cashOutHash,
+  });
 
   // Extract game data from contract
   const hasActiveGame = gameInfo ? (gameInfo as any)[3] : false; // active
@@ -351,7 +339,6 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     setTotalRows(3);
     setLevel(1);
     setCurrentRowIndex(2); // Start with the bottom row (1.10x)
-    setGameEnded(false);
     setSelectedTile(null);
 
     // Generate new cat positions for current rows
@@ -405,7 +392,6 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
           
           if (!won) {
             // Player lost - game ended
-            setGameEnded(true);
             setGameState("lost");
           }
         }
@@ -933,7 +919,6 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
 
 function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const account = useAccount();
 
   return (
     <div className="app-container">
