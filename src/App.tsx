@@ -12,9 +12,7 @@ import {
 import { parseEther, formatEther, decodeEventLog } from "viem";
 import { ABI } from "./ABI";
 
-const CONTRACT_ADDRESS = "0xc97a8e7Fe83d3941a10D5f791F5cf3E6Ef88f57c" as const; // TODO: Set contract address
-
-
+const CONTRACT_ADDRESS = "0xCb29D0975EeE79B4A4d80432ac87236D765fF836" as const; // TODO: Set contract address
 
 // Modal Component
 function WalletModal({
@@ -217,10 +215,7 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     data: makeChoiceHash,
     isPending: isMakingChoice,
   } = useWriteContract();
-  const {
-    writeContract: cashOut,
-    data: cashOutHash,
-  } = useWriteContract();
+  const { writeContract: cashOut, data: cashOutHash } = useWriteContract();
 
   // Transaction receipts with auto-refresh
   const { isLoading: isEnterGameLoading, isSuccess: enterGameSuccess } =
@@ -367,14 +362,14 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
     if (makeChoiceSuccess && makeChoiceReceipt) {
       // Parse transaction logs to determine if player won or lost
       try {
-        const choiceMadeLog = makeChoiceReceipt.logs.find(log => {
+        const choiceMadeLog = makeChoiceReceipt.logs.find((log) => {
           try {
             const decoded = decodeEventLog({
               abi: ABI,
               data: log.data,
               topics: log.topics,
             });
-            return decoded.eventName === 'ChoiceMade';
+            return decoded.eventName === "ChoiceMade";
           } catch {
             return false;
           }
@@ -386,10 +381,15 @@ function TileGame({ onConnectClick }: { onConnectClick: () => void }) {
             data: choiceMadeLog.data,
             topics: choiceMadeLog.topics,
           });
-          
-          const args = decoded.args as unknown as { gameId: bigint; choiceIndex: bigint; won: boolean; winnings: bigint };
+
+          const args = decoded.args as unknown as {
+            gameId: bigint;
+            choiceIndex: bigint;
+            won: boolean;
+            winnings: bigint;
+          };
           const won = args.won;
-          
+
           if (!won) {
             // Player lost - game ended
             setGameState("lost");
